@@ -1,0 +1,192 @@
+---
+title: "Rmarkdown-Thesis-GitHub"
+author: "Parviz Shahmirzalou, PhD Candidate."
+date: "2023-12-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r directory, include=FALSE}
+# Set Working directory. Write your computer working directory similar to below.
+knitr::opts_knit$set(root.dir = 'C:/Users/Lenovo/Documents')
+```
+
+## 4- Breast Cancer Data distributed as Birnbaum-Saunders
+
+### 4-1 R codes
+
+```{r}
+{
+  
+  ## Import and Make dummy Variable
+  breast <- read.table("Data_Paper1.txt", header = TRUE)
+  #View(breast)
+  breast$Stage2 <- as.numeric(breast$Stage == 2)
+  breast$Stage3 <- as.numeric(breast$Stage == 3)
+  breast$Stage4 <- as.numeric(breast$Stage == 4)
+  breast$Grade2 <- as.numeric(breast$Grade == 2)
+  breast$Grade3 <- as.numeric(breast$Grade == 3)
+  breast$Education2 <- as.numeric(breast$Education == 2)
+  breast$Education3 <- as.numeric(breast$Education == 3)
+  breast$Education4 <- as.numeric(breast$Education == 4)
+  breast$Education5 <- as.numeric(breast$Education == 5)
+  #View(breast)
+  
+  #rm(list = ls())
+  library(survival)
+  library(R2OpenBUGS)
+  # path ----------------------------------------
+  getwd()
+  bugswd = paste0(getwd(),"/bugswd"); bugswd
+  modelfile = paste0(bugswd,"/modelfile.txt"); modelfile
+  # Import Data
+  dim(breast)
+  x <- breast$AgeC   #Code 1, Age<40
+  prop.table(table(x))
+  t <- breast$t  #time based on month
+  summary(t)
+  length(t)
+  c <- breast$c
+  length(c)
+  length(t[t == "NA"])/length(t)   # Percent of Censoring, 88 Censor, 40% 
+  length(c[c == "0"])/length(c)   # Percent of Observed
+  n = length(x); n
+  z = breast$z   # Composed from Observed and Censored data
+  delta = breast$delta   # delta=0 means Censoring
+  ic = which(delta == 0)   # indicator censor
+  length(ic)
+  age <- breast$AgeC
+  # model
+  modeltext = "model {
+          for(i in 1:n){
+      	  t[i] ~ dbs(shape, lambda[i])C(c[i], )
+      		log(lambda[i]) <- b[1] + b[2] * Stage2[i] + b[3] * Stage3[i] + b[4] * Stage4[i] +
+        	                  b[5] * Grade2[i] + b[6] * Grade3[i] + b[7] * Education2[i] + b[8] * Education3[i] +
+        	                  b[9] * Education4[i] + b[10] * Education5[i] + b[11] * ER[i] + b[12] * PR[i] +
+        	                  b[13] * HER2[i] + b[14] * Age[i]
+        # conditional tmed
+        cim[i] <- step(c[i]-1.0E-5) * lambda[i] * pow( (shape/2) * 0.5875441*logit(0.5 + 0.5 * phi((1/shape) * 
+                  (sqrt(c[i]/lambda[i]) - sqrt(lambda[i]/c[i])))) + sqrt( 1 + pow( (shape/2) * 
+                  0.5875441 * logit(0.5 + 0.5 * phi((1/shape) * (sqrt(c[i]/lambda[i]) -
+                  sqrt(lambda[i]/c[i])))),2)) ,2)
+        
+  }
+	# priors
+	shape ~ dgamma(0.01,0.01)
+	for(j in 1:14) {b[j]~dnorm(0,0.01)}		
+ }
+ "
+
+  cat(modeltext, file = modelfile) #file.show(modelfile)
+  modeldata = list( n = n, Stage2 = breast$Stage2, Stage3 = breast$Stage3, Stage4 = breast$Stage4,
+                    Grade2 = breast$Grade2, Grade3 = breast$Grade3, Education2 = breast$Education2, 
+                    Education3 = breast$Education3, Education4 = breast$Education4, Education5 = breast$Education5,
+                    ER = breast$ER, PR = breast$PR, HER2 = breast$HER2, Age = breast$Age , t = breast$t, c = breast$c)
+  modelinit = list(list(b = rep(1,14) , shape = 1))
+  param = c("shape","b","cim", "lambda")
+  
+  # bugs ----------------------------------------
+  bugsOut <- bugs(
+    working.directory = bugswd,
+    model.file = modelfile,
+    data = modeldata,
+    inits = modelinit,
+    #inits = NULL,
+    parameters.to.save = param,
+    n.chains = 1,
+    n.iter = 11000,
+    n.burnin = 1000,
+    n.thin = 1
+    #, debug = TRUE
+    #, codaPkg = TRUE
+  )
+  
+  # output ----------------------------------------
+  bugsOut$DIC
+  dim(bugsOut$sims.array)   #composed: alpha, lambda, 88 simulation,deviance = 91 columns.
+  bugsOut$sims.array[1:5,1,16:103]  # report 1 till 5 from 88 times censored times simulations.
+  bugsOut$summary[1:15, c(1:2)]    # mean & sd parameters: alpha & lambda
+  
+  
+  parsim = bugsOut$sims.array[,1,1:15]   #parameter simulation: 100*2
+  impsim = bugsOut$sims.array[,1,16:103]  # imputation simulation: 100*88
+  
+  test = data.frame("True" = z[ic], "simulated" = impsim[ic])
+  #View(test)
+  timp = t
+}
+```
+
+### 4-2 figure 3-31 in the thesis.
+
+```{r}
+{
+  km1 = survfit(Surv(z,delta) ~ breast$AgeC); km1
+  plot(km1, mark.time = TRUE,lty = 1,conf.int = FALSE,  col = "black",
+       main = paste("Posterior Estimate: Shape=1.22, Scale=145.21, DIC=1510"))  #KM_Estimation
+  
+  # output ----------------------------------------
+  # imputation      h=hat
+  shapeh = bugsOut$mean$shape; shapeh
+  lambdah = bugsOut$mean$lambda; lambdah
+  
+  cen=c
+  # Corredted -->
+  zmed = qweibull(.5*pweibull(cen,shapeh,lambdah, lower.tail = FALSE),shapeh, lambdah, lower.tail = FALSE)
+  zmed
+  
+  
+  #
+  ic = which(delta==0); ic      #index censor to count number of censored case.
+  length(ic)
+  zimp <- rep(NA, n)
+  zimp[ic] <- zmed[ic]
+  zimp[-ic] <- z[-ic]  # zimp = failure times+imputed censored times
+  zimp
+  delta1 = rep(1,n)  # after impute, all of times are observed then we made delta1.
+  #
+  km2 = survfit(Surv(zimp,delta1) ~ x); km2     # Bayesian Imputation
+  lines(km2, mark.time = TRUE, col = "Blue", lty = 1)
+  
+  
+  tOC = z[delta==1]  # number of observed times
+  deltaOC = rep(1, length(tOC))
+  length(deltaOC)
+  km3 = survfit(Surv(tOC, deltaOC) ~ x[delta==1]); km3       # Omitting_Censored
+  lines(km3, mark.time = TRUE, col = "Red", lty = 1)
+  
+  legend("topright", c("Kaplan-Meier Curve", "Curve with Median of Simulated Times", "Curve without Censored Times"), lty= 1, col = c("black", "Blue", "Red"), cex = 0.7)
+}
+```
+
+### 4-3 figure 3-30 in the thesis.
+
+```{r}
+{
+  km1 = survfit(Surv(z,delta) ~ breast$AgeC); km1
+  plot(km1, mark.time = TRUE,lty = 1, lwd=2, col = "black",
+       main = paste("t~Birnbaum-Saunders, p=0.40, n=220"))  #KM_Estimation
+  
+  # simulation 
+  for (i in 1:nrow(impsim)) {
+    timp[ic] <- impsim[i,]
+    kmi = survfit(Surv(timp,delta1) ~ x)
+    lines(kmi, mark.time = TRUE, col = "gray", lty = 1)    # n time Imputation
+    #Sys.sleep(.5)
+  }
+  timp[ic] <- colMeans(impsim)
+  kmmean = survfit(Surv(timp,delta1) ~ x)
+  lines(kmi, mark.time = TRUE, col = "blue", lty = 2, lwd = 2)  # Mean of n times Imputation
+  lines(km1, mark.time = TRUE,lty = 1, lwd=2, col = "black",
+        main = paste("t~Birnbaum-Saunders, p=0.40, n=220"))  #KM_Estimation
+  
+  legend("topright", 
+         c("Kaplan-Meier Curve", "Curve for 10,000 Times Imputation", "Curve for Imputations Mean"),
+         lty = 1, col = c("Black", "gray","blue"), cex = .7)
+}  
+```
