@@ -1,0 +1,257 @@
+---
+title: "Rmarkdown-Thesis-GitHub"
+author: "Parviz Shahmirzalou, PhD Candidate."
+date: "2023-12-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r directory, include=FALSE}
+# Set Working directory. Write your computer working directory similar to below.
+knitr::opts_knit$set(root.dir = 'C:/Users/Lenovo/Documents')
+```
+
+##  5- Mix Bayesian Network, package deal.
+
+### 5-1 Simulate censored times in the breast cancer data to impute them.
+
+```{r}
+{
+  
+  ## Import and Make dummy Variable
+  breast <- read.table("Data_Paper1.txt", header = TRUE)
+  #View(breast)
+  breast$Stage2 <- as.numeric(breast$Stage == 2)
+  breast$Stage3 <- as.numeric(breast$Stage == 3)
+  breast$Stage4 <- as.numeric(breast$Stage == 4)
+  breast$Grade2 <- as.numeric(breast$Grade == 2)
+  breast$Grade3 <- as.numeric(breast$Grade == 3)
+  breast$Education2 <- as.numeric(breast$Education == 2)
+  breast$Education3 <- as.numeric(breast$Education == 3)
+  breast$Education4 <- as.numeric(breast$Education == 4)
+  breast$Education5 <- as.numeric(breast$Education == 5)
+  #View(breast)
+  
+  #rm(list = ls())
+  library(survival)
+  library(R2OpenBUGS)
+  # path ----------------------------------------
+  getwd()
+  bugswd = paste0(getwd(),"/bugswd"); bugswd
+  modelfile = paste0(bugswd,"/modelfile.txt"); modelfile
+  # Import Data
+  dim(breast)
+  x <- breast$AgeC   #Code 1, Age<40
+  prop.table(table(x))
+  t <- breast$t  #time based on month
+  summary(t)
+  length(t)
+  c <- breast$c
+  length(c)
+  length(t[t == "NA"])/length(t)   # Percent of Censoring, 88 Censor, 40% 
+  length(c[c == "0"])/length(c)   # Percent of Observed
+  n = length(x); n
+  z = breast$z   # Composed from Observed and Censored data
+  delta = breast$delta   # delta=0 means Censoring
+  ic = which(delta == 0)   # indicator censor
+  length(ic)
+  age <- breast$AgeC
+  # model
+  modeltext = "model {
+          for(i in 1:n){
+      	  t[i] ~ dbs(shape, lambda[i])C(c[i], )
+      		log(lambda[i]) <- b[1] + b[2] * Stage2[i] + b[3] * Stage3[i] + b[4] * Stage4[i] +
+        	                  b[5] * Grade2[i] + b[6] * Grade3[i] + b[7] * Education2[i] + b[8] * Education3[i] +
+        	                  b[9] * Education4[i] + b[10] * Education5[i] + b[11] * ER[i] + b[12] * PR[i] +
+        	                  b[13] * HER2[i] + b[14] * Age[i]
+        
+        cim[i] <- step(c[i]-1.0E-5) * lambda[i] * pow( (shape/2) * 0.5875441*logit(0.5 + 0.5 * phi((1/shape) * 
+                  (sqrt(c[i]/lambda[i]) - sqrt(lambda[i]/c[i])))) + sqrt( 1 + pow( (shape/2) * 
+                  0.5875441 * logit(0.5 + 0.5 * phi((1/shape) * (sqrt(c[i]/lambda[i]) -
+                  sqrt(lambda[i]/c[i])))),2)) ,2)
+        
+  }
+	# priors
+	shape ~ dgamma(0.01,0.01)
+	for(j in 1:14) {b[j]~dnorm(0,0.01)}		
+  }
+  "
+  
+  cat(modeltext, file = modelfile) #file.show(modelfile)
+  modeldata = list( n = n, Stage2 = breast$Stage2, Stage3 = breast$Stage3, Stage4 = breast$Stage4,
+                    Grade2 = breast$Grade2, Grade3 = breast$Grade3, Education2 = breast$Education2, 
+                    Education3 = breast$Education3, Education4 = breast$Education4, Education5 = breast$Education5,
+                    ER = breast$ER, PR = breast$PR, HER2 = breast$HER2, Age = breast$Age , t = breast$t, c = breast$c)
+  modelinit = list(list(b = rep(1,14) , shape = 1))
+  param = c("shape","b","cim", "lambda")
+  
+  # bugs ----------------------------------------
+  bugsOut <- bugs(
+    working.directory = bugswd,
+    model.file = modelfile,
+    data = modeldata,
+    inits = modelinit,
+    #inits = NULL,
+    parameters.to.save = param,
+    n.chains = 1,
+    n.iter = 11000,
+    n.burnin = 1000,
+    n.thin = 1
+    #, debug = TRUE
+    #, codaPkg = TRUE
+  )
+  
+  # output ----------------------------------------
+  bugsOut$DIC
+  dim(bugsOut$sims.array)   #composed: alpha, lambda, 88 simulation,deviance = 91 columns.
+  bugsOut$sims.array[1:5,1,16:103]  # report 1 till 5 from 88 times censored times simulations.
+  bugsOut$summary[1:15, c(1:2)]    # mean & sd parameters: alpha & lambda
+  
+  
+  parsim = bugsOut$sims.array[,1,1:15]   #parameter simulation: 100*2
+  impsim = bugsOut$sims.array[,1,16:103]  # imputation simulation: 100*88
+  
+  test = data.frame("True" = z[ic], "simulated" = impsim[ic])
+  #View(test)
+  timp = t
+  
+  #imputation      h=hat
+  shapeh = bugsOut$mean$shape; shapeh
+  lambdah = bugsOut$mean$lambda; lambdah
+  lambdamed = bugsOut$median$lambda; lambdamed
+  
+  cen=c
+  zmed = qweibull(.5*pweibull(cen,shapeh,lambdah, lower.tail = FALSE),shapeh, lambdah, lower.tail = FALSE)
+  zmed
+  #View(breast)
+  #Incorporate failure time with imputed censor time
+  ic = which(delta==0); ic      #index censor to count number of censored case.
+  length(ic)
+  zimp = rep(NA,n)
+  zimp[ic] = zmed[ic]
+  zimp[-ic] = z[-ic]  
+  zimp   # zimp = failure times+imputed censored times#View(breast)
+}
+```
+
+### 5-2 Directed Acyclic Graph(DAG)
+
+```{r}
+{
+  # Structural Learning, Time -----> u = 0.5 (sqrt(t/beta) - sqrt(beta/t))
+  
+  # Structural Learning
+  #Add covariates from Breast Cancer data.
+
+  BStrans <- 0.5 * (sqrt(zimp/lambdah) - sqrt(lambdah/zimp))
+  
+  
+  datBS <- cbind(Status = breast$Status, Time = BStrans, Age = breast$Age, Education = breast$Education, 
+                 ER = breast$ER, PR = breast$PR, Her2 = breast$HER2 , Stage = breast$Stage, Grade = breast$Grade
+  )
+  datBS <- as.data.frame(datBS)
+  #View(datBS)
+  write.csv(datBS, file="datBS.csv") 
+  
+  # Multi-Collinearity
+  model1 <- lm(zimp~ Age + Education + Stage + ER + PR + Her2 + Grade, data = datBS)
+  #install.packages("olsrr")
+  library(olsrr)  
+  
+  
+  ols_vif_tol(model1)
+  
+  datBS$Status <- as.factor(datBS$Status)
+  datBS$Stage <- as.factor(datBS$Stage)
+  datBS$Grade <- as.factor(datBS$Grade)
+  datBS$ER <- as.factor(datBS$ER)
+  datBS$PR <- as.factor(datBS$PR)
+  datBS$Her2 <- as.factor(datBS$Her2)
+  datBS$Education <- as.factor(datBS$Education)
+  datBS$Age <-as.numeric(datBS$Age)
+  datBS$Time<- as.numeric(datBS$Time)
+  #View(datBS)
+  summary(datBS$Time); sd(datBS$Time)
+  cor.test(datBS$Age, datBS$Time)
+  reg1 <- lm(Time ~ Age, data = datBS)
+  summary(reg1)
+  plot(datBS$Age, datBS$Time, ylab = "Time to Death", xlab = "Age at Diagnosis cancer")
+  text(65,800,"Correlation = -0.13, Sig. = 0.056")
+  abline(lm(datBS$Time~datBS$Age))
+  
+  
+  #                         Comment Deal: 
+  #   a data frame, where the columns define the variables. 
+  #   A continuous variable should have type numeric and 
+  #   discrete variables should have type factor.
+  
+  # Fit Bayesian Network
+  #
+  #setwd("C:/Users/novingostar/Documents/R-studio")
+  #install.packages("deal")
+  library(deal)
+  ## specify prior network
+  
+  # We have no prior knowledge about specific dependency relations, 
+  # so for simplicity we use the empty DAG as the prior DAG and 
+  # let the probability distribution of the discrete variables be uniform.
+  
+  ## specify prior network
+  br.nw <- network(datBS)
+  plot(br.nw)    # an empty DAG
+  # Number of networks can be draw for nd and nc. 
+  numbermixed(7,2)    
+  # Adjust prior probability distribution br.nw:
+  br.nw$nodes$Education$prob <- c(0.22, 0.22, 0.20, 0.20, 0.16)
+  br.nw$nodes$ER$prob <- c(0.55, 0.45)
+  br.nw$nodes$PR$prob <- c(0.55, 0.45)
+  br.nw$nodes$Her2$prob <- c(0.45, 0.55)
+  br.nw$nodes$Stage$prob <- c(0.20, 0.23, 0.27 ,0.30 )
+  br.nw$nodes$Grade$prob <- c(0.25, 0.30, 0.45)
+  
+  # Non-adjust probability distribution br.nw:
+  # br.nw$nodes$Education$prob <- c(0.20, 0.20, 0.20, 0.20, 0.20)
+  # br.nw$nodes$ER$prob <- c(0.50, 0.50)
+  # br.nw$nodes$PR$prob <- c(0.50, 0.50)
+  # br.nw$nodes$Her2$prob <- c(0.50, 0.50)
+  # br.nw$nodes$Stage$prob <- c(0.25, 0.25, 0.25, 0.25 )
+  # br.nw$nodes$Grade$prob <- c(0.33, 0.33, 0.33)
+  
+  
+  ## make joint prior distribution
+  br.prior <- jointprior(br.nw, phiprior = "bottcher")
+  br.prior
+  # We do not allow arrows into Age and ER and set ban list.
+  ## ban arrows towards Age and ER.
+  
+  mybanlist <- matrix(c(1,1,1,1,1,1,1,1,  2,2,2,2,2,2,2,2,  3,3,3,3,  4,4,4,4,4,  5,5,5,5,  6,6,6,6,  7,7,7,7,  8,8,8,8,8, 9,9,9,9,9,  # *-->
+                        2,3,4,5,6,7,8,9,  1,3,4,5,6,7,8,9,  5,6,7,9,  3,5,6,7,9,  3,4,6,7,  3,4,5,7,  3,4,5,6,  3,4,5,6,7, 3,4,5,6,7), ncol=2)
+  
+  
+  banlist(br.nw) <- mybanlist
+  #mybanlist                     # banned edges indicated with red line.
+  
+  ## learn the initial network
+  
+  br.nw <- learn(br.nw, datBS, br.prior)$nw
+  plot(br.nw)   # show banlist   
+  
+  
+  ## Do structural search
+  br.search <- autosearch(initnw = br.nw, data = datBS, prior = br.prior,
+                          maxiter = 1000, trace=TRUE, removecycles = TRUE)
+  
+  
+  # DAG to Paper ----->>
+  plot.network(thebest1 <- br.search$nw, showban = FALSE, cexscale =11 ,arrowlength =0.20 , 
+               font = 1,unitscale = 30,
+               yr=c(350,0), xr = c(0,330))
+}
+```
+
+### The END.
